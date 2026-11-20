@@ -1,5 +1,5 @@
 // Token Radar's dashboard. It reads window.RADAR (data.js, generated from the verified
-// board.json: 194 ranked rows) and renders the ranked board, a filterable table, a
+// board.json: 200 ranked rows) and renders the ranked board, a filterable table, a
 // per-protocol detail drawer with the model's own inputs and the protocol's farm plan.
 // The farm plan shown is board.json's own farm_steps, rendered verbatim, so the page
 // and the board agree word for word. No network: every byte it shows is in data.js.
@@ -30,12 +30,20 @@
   }
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
+  // Rounding runs in the same two stages as the model: each multiplier is cut to four decimals
+  // first, then the product is rounded to a whole dollar. Without the first cut the page's
+  // recomputation drifts from the board by a dollar on some rows.
+  function round4(n) { return Math.round(n * 1e4) / 1e4; }
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var growthMult = 1 + (growth / 100) * model.growth_weight;
+    var growthMult = round4(1 + (growth / 100) * model.growth_weight);
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
-    var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity));
+    var maturity = round4(model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range);
+    var chains = row.chains ? row.chains.length : 0;
+    var breadth = round4(Math.min(1 + model.breadth_per_chain * Math.max(0, chains - 1), model.breadth_cap));
+    var launch = (row.age_days !== null && row.age_days !== undefined && row.age_days <= model.launch_window_days && growth > 0) ? model.launch_multiplier : 1;
+    var confidence = (row.change_7d === null || row.change_7d === undefined) ? model.confidence_missing_multiplier : 1;
+    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * breadth * launch * confidence));
   }
 
   function el(tag, attrs) {
@@ -242,9 +250,29 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x min(1 + ' + m.breadth_per_chain + ' x (chains - 1), ' + m.breadth_cap + ') x launch x confidence )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Breadth adds ' + m.breadth_per_chain + ' per chain past the first, capped at x' + m.breadth_cap + '; a protocol listed within ' + m.launch_window_days + ' days and still growing earns x' + m.launch_multiplier + '; a missing seven-day move takes a x' + m.confidence_missing_multiplier + ' haircut. Each multiplier is cut to four decimals before the product is rounded to a whole dollar. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
+    );
+  }
+
+  function signalsPanel() {
+    var breadthRows = DATA.rows.filter(function (r) { return r.breadth_multiplier > 1; });
+    var launchRows = DATA.rows.filter(function (r) { return r.launch_multiplier > 1; });
+    var confidenceRows = DATA.rows.filter(function (r) { return r.confidence_multiplier < 1; });
+    function signalLine(label, list, key) {
+      if (list.length === 0) return el('div', { class: 'fact' }, el('span', { text: label }), el('b', { text: '0 rows' }));
+      var top = list[0];
+      return el('div', { class: 'fact' }, el('span', { text: label }), el('b', { text: list.length + ' rows · top ' + top.name + ' x' + top[key] }));
+    }
+    return el('section', { class: 'panel model signals' },
+      el('h2', { text: 'What the three new signals moved' }),
+      el('p', { class: 'sub', text: 'Breadth, launch and confidence are the radar-2 signals on top of the house model. Each line counts the rows the signal moved and names its strongest row, in board order.' }),
+      el('div', { class: 'facts signals' },
+        signalLine('Breadth (multi-chain)', breadthRows, 'breadth_multiplier'),
+        signalLine('Launch (young and growing)', launchRows, 'launch_multiplier'),
+        signalLine('Confidence (missing 7d move)', confidenceRows, 'confidence_multiplier')
+      )
     );
   }
 
@@ -274,6 +302,9 @@
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
+        el('div', null, el('span', { text: 'Breadth multiplier' }), el('b', { class: 'num', text: String(row.breadth_multiplier) })),
+        el('div', null, el('span', { text: 'Launch multiplier' }), el('b', { class: 'num', text: String(row.launch_multiplier) })),
+        el('div', null, el('span', { text: 'Confidence multiplier' }), el('b', { class: 'num', text: String(row.confidence_multiplier) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
@@ -301,7 +332,7 @@
     shell.appendChild(lede());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
-    if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+    if (state.tab === 'pre-token') { shell.appendChild(modelPanel()); shell.appendChild(signalsPanel()); }
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);
