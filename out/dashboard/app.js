@@ -1,5 +1,5 @@
 // Token Radar's dashboard. It reads window.RADAR (data.js, generated from the verified
-// board.json: 200 ranked rows) and renders the ranked board, a filterable table, a
+// board.json: 194 ranked rows) and renders the ranked board, a filterable table, a
 // per-protocol detail drawer with the model's own inputs and the protocol's farm plan.
 // The farm plan shown is board.json's own farm_steps, rendered verbatim, so the page
 // and the board agree word for word. No network: every byte it shows is in data.js.
